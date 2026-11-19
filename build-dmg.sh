@@ -28,7 +28,7 @@ if [[ -f assets/AppIcon.icns ]]; then
 else
     /usr/libexec/PlistBuddy -c 'Delete :CFBundleIconFile' "$app/Contents/Info.plist"
 fi
-cp outputs/bb_tune.py outputs/Anleitung.md "$resources/"
+cp outputs/bb_tune.py outputs/Anleitung.md outputs/Flight-Guide.md "$resources/"
 cp "$staging/decoder/obj/blackbox_decode" "$resources/"
 tar -xzf "$staging/python.tar.gz" -C "$resources"
 "$resources/python/bin/python3" -m pip install --no-cache-dir 'numpy==2.0.2'
