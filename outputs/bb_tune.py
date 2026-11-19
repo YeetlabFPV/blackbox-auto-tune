@@ -1138,10 +1138,20 @@ def slider_guidance(config, changes, sources, blocked, relative=None):
     if gains:
         guidance.append("PID und Feedforward · " + ", ".join(f"{key} {config[key]} → {value}" for key, value in sorted(gains))
                         + ". Wiederhole die Manöver der betroffenen Achsen.")
-    if active_step != "master" and any(source["metrics"].get("short_events") for source in sources):
+    if active_step != "master":
         multiplier = config.get("simplified_master_multiplier", "")
         current = f"Bei {int(multiplier) / 100:.2f} belassen." if multiplier.isdecimal() else "Aktuellen Wert beibehalten."
-        guidance.append(f"Master Multiplier · {current} Im Log fallen kurze Schwingungen ohne starken Stickbefehl auf.")
+        flights = [source["metrics"] for source in sources]
+        if config.get("simplified_pids_mode") == "OFF":
+            detail = "Vereinfachte PID-Slider deaktiviert."
+        elif any(flight.get("short_events") for flight in flights):
+            detail = f"{current} Kurze Schwingungen bei kleinen Stickbefehlen erkannt."
+        elif set(steady_tracking(flights)) != set(AXES[:2]) or any(
+                set(flight["noise"]) != {"low", "mid"} for flight in flights):
+            detail = "Messung offen. Für den Master-Vergleich fehlen ruhige Gaspassagen oder gleichmässige Roll- und Pitch-Bewegungen mit Motorreserve."
+        else:
+            detail = f"{current} Die Messung begründet aktuell keinen Master-Schritt."
+        guidance.append(f"Master Multiplier · {detail}")
     return guidance
 
 
