@@ -22,6 +22,8 @@ Keep the built app inside the checkout. The setup script creates a local Python 
 3. Read the dashboard. If it offers a change, record the original setting and make only the proposed change. Repeat similar passes and manoeuvres for the comparison.
 4. Open a GitHub issue with your firmware version, quad size, what you observed and what the app reported. Include flight files only if you are comfortable sharing them publicly.
 
+For a first test, download the [VX3.5 flight log at 18:00:16](https://github.com/eddycek/fpvpidlab/blob/76354a022b331a9b466727f9a67ba369a12067ac/test-fixtures/bbl/blackbox_2026-03-29T18-00-16-246Z.bbl) from the original source. It produces a Roll Feedforward proposal of 120 → 110.
+
 The CLI mappings cover Betaflight 4.5.x, 2025.12.x and 2026.6.x, including the verified 2025.12.0-beta build `9d3558c3f`. CLI proposals also depend on the recorded signals and manoeuvre coverage. See the [German flight and tuning guide](outputs/Anleitung.md).
 
 Flight logs and reports are processed on your Mac. The app writes reports to `work/Flugberichte`. [Betaflight Blackbox Tools](https://github.com/betaflight/blackbox-tools) is built separately from its upstream source.
