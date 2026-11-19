@@ -26,7 +26,7 @@ if [[ -f assets/AppIcon.icns ]]; then
 else
     /usr/libexec/PlistBuddy -c 'Delete :CFBundleIconFile' "$bundle/Contents/Info.plist"
 fi
-swiftc -parse-as-library -O work/BlackboxUI.swift -o "$bundle/Contents/MacOS/Blackbox Auto-Tune"
+swiftc -target "$(uname -m)-apple-macosx14.0" -parse-as-library -O work/BlackboxUI.swift -o "$bundle/Contents/MacOS/Blackbox Auto-Tune"
 codesign --force --sign - "$bundle"
 codesign --verify --strict "$bundle"
 if [[ -d "$app" ]]; then
