@@ -200,6 +200,8 @@ private struct StepTrace: Identifiable {
 private struct StepPanel: View {
     let current: [LogMeasurement]
     let previous: [LogMeasurement]
+    let english: Bool
+    private func tr(_ german: String, _ englishText: String) -> String { english ? englishText : german }
 
     private func traces(_ logs: [LogMeasurement], _ axis: String, _ round: String) -> [StepTrace] {
         logs.enumerated().compactMap { index, log in
@@ -212,33 +214,33 @@ private struct StepPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Aus Sollwert und Gyro geschätzte Reaktion. 100 % entspricht dem geschätzten Endwert. Für den Flugvergleich sollten Setup und Manöver vergleichbar sein.")
+            Text(tr("Aus Sollwert und Gyro geschätzte Reaktion. 100 % entspricht dem geschätzten Endwert. Für den Flugvergleich sollten Setup und Manöver vergleichbar sein.", "Response estimated from setpoint and gyro. 100% is the estimated final value. Use similar maneuvers and setups for comparison."))
             ForEach(["roll", "pitch", "yaw"], id: \.self) { axis in
-                let now = traces(current, axis, "Aktuell")
+                let now = traces(current, axis, tr("Aktuell", "Current"))
                 if now.isEmpty {
-                    Text("\(axis.capitalized) · Keine auswertbare Kurve im aktuellen Logmaterial")
+                    Text(tr("\(axis.capitalized) · Keine auswertbare Kurve im aktuellen Logmaterial", "\(axis.capitalized) · No usable curve in the current logs"))
                         .foregroundStyle(.secondary)
                 } else {
-                    let series = traces(previous, axis, "Vorher") + now
+                    let series = traces(previous, axis, tr("Vorher", "Previous")) + now
                     Text(axis.capitalized).font(.headline)
                     Chart {
                         RuleMark(y: .value("Endwert", 100)).lineStyle(StrokeStyle(dash: [4]))
                             .foregroundStyle(.secondary)
                         ForEach(series) { trace in
                             ForEach(trace.values.indices, id: \.self) { i in
-                                LineMark(x: .value("Zeit (ms)", Double(i) * trace.interval),
-                                         y: .value("Antwort (%)", 100 * trace.values[i]),
+                                LineMark(x: .value(tr("Zeit (ms)", "Time (ms)"), Double(i) * trace.interval),
+                                         y: .value(tr("Antwort (%)", "Response (%)"), 100 * trace.values[i]),
                                          series: .value("Segment", trace.id))
                                     .foregroundStyle(by: .value("Segment", trace.id))
                             }
                         }
                     }
-                    .chartXAxisLabel("Millisekunden").chartYAxisLabel("Antwort (%)")
+                    .chartXAxisLabel(tr("Millisekunden", "Milliseconds")).chartYAxisLabel(tr("Antwort (%)", "Response (%)"))
                     .frame(minHeight: 180)
                     ForEach(series) { trace in
-                        let peak = trace.step.overshoot.map { String(format: "%.0f %%", 100 * $0) } ?? "offen"
-                        let settling = trace.step.settling_ms.map { String(format: "%.0f ms", $0) } ?? "offen"
-                        Text("\(trace.id) · Überschwingen \(peak) · Einschwingen \(settling)")
+                        let peak = trace.step.overshoot.map { String(format: "%.0f %%", 100 * $0) } ?? tr("offen", "unavailable")
+                        let settling = trace.step.settling_ms.map { String(format: "%.0f ms", $0) } ?? tr("offen", "unavailable")
+                        Text(tr("\(trace.id) · Überschwingen \(peak) · Einschwingen \(settling)", "\(trace.id) · Overshoot \(peak) · Settling \(settling)"))
                     }
                 }
             }
@@ -261,7 +263,9 @@ enum Analyzer {
         ? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Blackbox Auto-Tune")
         : work).appendingPathComponent("Flugberichte")
-    static let guide = (bundled ? resources : output).appendingPathComponent("Anleitung.md")
+    static func guide(english: Bool) -> URL {
+        (bundled ? resources : output).appendingPathComponent(english ? "Flight-Guide.md" : "Anleitung.md")
+    }
 
     static func run(logs: [URL], dump: URL?, previous: URL?, index: String, allowFilterOpening: Bool,
                     completion: @escaping (Swift.Result<Result, Error>) -> Void) {
@@ -331,12 +335,13 @@ struct BlackboxApp: App {
 private enum TuneRating {
     case good, check, open, measured
 
-    var title: String {
-        switch self {
-        case .good: "Unauffällig"
-        case .check: "Prüfen"
-        case .open: "Messung offen"
-        case .measured: "Gemessen"
+    func title(_ english: Bool) -> String {
+        func tr(_ german: String, _ englishText: String) -> String { english ? englishText : german }
+        return switch self {
+        case .good: tr("Unauffällig", "Looks good")
+        case .check: tr("Prüfen", "Check")
+        case .open: tr("Messung offen", "More data needed")
+        case .measured: tr("Gemessen", "Measured")
         }
     }
 
@@ -374,7 +379,107 @@ struct WorkspaceView: View {
     @State private var allowFilterOpening = false
     private let surface = Color(red: 0.095, green: 0.115, blue: 0.15)
     private let accent = Color(red: 0.50, green: 0.91, blue: 0.74)
-    private let stages = ["Ausgangsmessung", "Nachmessen", "Verifizieren"]
+    @AppStorage("resultLanguage") private var language = "de"
+    private var english: Bool { language == "en" }
+    private func tr(_ german: String, _ englishText: String) -> String { english ? englishText : german }
+    // Report strings remain compatible with existing German reports and CLI output.
+    private static let reportPhrases: [(String, String)] = [
+        ("Diagnose · Vorab-Firmware", "Diagnostics · Prerelease firmware"),
+        ("CLI-Vorschlag zur Flugprüfung", "CLI suggestion for flight testing"),
+        ("Slider-Schritt zur Flugprüfung", "Slider change for flight testing"),
+        ("Keine Änderung abgeleitet", "No change recommended"),
+        ("Keine klare Verschlechterung", "No clear degradation"),
+        ("Kein klarer Nutzen", "No clear benefit"),
+        ("Verbesserung im Vergleich", "Improvement observed"),
+        ("Slider-Rücknahme empfohlen", "Restore the previous slider setting"),
+        ("Slider-Vergleich offen", "Slider comparison pending"),
+        ("Vergleich offen", "Comparison pending"),
+        ("Rücknahme prüfen", "Review rollback"),
+        ("Starke Vibration prüfen", "Investigate strong vibration"),
+        ("Messung offen. Für die Beurteilung fehlen ruhige Passagen in einem Gasbereich.", "More data needed. See the suggested straight passes in the flight checklist."),
+        ("Messung offen. Für den Master-Vergleich fehlen ruhige Gaspassagen oder gleichmässige Roll- und Pitch-Bewegungen mit Motorreserve.", "More data needed. See the flight checklist for the master multiplier comparison."),
+        ("Vereinfachte PID-Slider deaktiviert.", "Simplified PID sliders are off."),
+        ("Vereinfachter Filter-Slider deaktiviert.", "Simplified filter slider is off."),
+        ("Aktuellen Wert beibehalten.", "Keep the current value."),
+        ("Kurze Schwingungen bei kleinen Stickbefehlen erkannt.", "Short oscillations detected at low stick input."),
+        ("Im Log fallen kurze Schwingungen ohne starken Stickbefehl auf.", "The log shows short oscillations at low stick input."),
+        ("Die Messung begründet aktuell keinen Slider-Schritt.", "The measurements do not support a slider change yet."),
+        ("Die Messung begründet aktuell keinen Master-Schritt.", "The measurements do not support a master multiplier change yet."),
+        ("D-Term-Rauschen prüfen. Wiederhole ruhige Geraden im auffälligen Gasbereich.", "Check D-term noise. Repeat straight passes at the affected throttle level."),
+        ("PID und Feedforward ·", "PID and feedforward ·"),
+        ("Wiederhole die Manöver der betroffenen Achsen.", "Repeat the maneuvers on the affected axes."),
+        ("Vergleiche Gyro-Rauschen und Filterverzögerung.", "Compare gyro noise and filter delay."),
+        ("Vergleiche das Rauschen im selben Gasbereich.", "Compare noise in the same throttle range."),
+        ("Für die nächste Runde den aktuellen CLI-Dump mitliefern.", "Include a current CLI dump in the next round."),
+        ("Dyn. Minimum", "Dynamic minimum"),
+        ("Dyn. Maximum", "Dynamic maximum"),
+        ("Statisch", "Static"),
+        ("Wiederholtes hochfrequentes D-Term-Rauschen. Flieg erneut ruhige Geraden im betroffenen Gasbereich.", "Repeated high-frequency D-term noise. Repeat straight passes at the affected throttle level."),
+        ("Saubere Spektren, geloggtes RPM und messbare Gyro-Filterverzögerung. Wiederhole die ruhigen Geraden.", "Clean spectra, logged RPM, and measurable gyro filter delay. Repeat the straight passes."),
+        ("Roll und Pitch bleiben bei gleichmässiger Drehung hinter dem Sollwert, bei vorhandener Motorreserve. Wiederhole dieselben Manöver.", "Roll and pitch lag during steady rotation with motor headroom. Repeat the same maneuvers."),
+        ("Für den Master-Vergleich fehlen ähnlich schnelle Roll- und Pitch-Manöver.", "The master comparison needs roll and pitch maneuvers at similar rates."),
+        ("Sollwertfehler Roll / Pitch ·", "Roll / pitch tracking error ·"),
+        ("Für die Filterprüfung fehlen ruhige Fenster im zuvor auffälligen Gasbereich.", "The filter comparison needs steady passes at the previously affected throttle level."),
+        ("D-Term-Rauschen ·", "D-term noise ·"),
+        ("Für den Gyro-Vergleich fehlen vergleichbare Frequenzdaten oder Filterverzögerungen.", "The gyro comparison needs comparable spectra and filter-delay measurements."),
+        ("Gyro-Filterverzögerung ·", "Gyro filter delay ·"),
+        ("Für den Vergleich fehlen gemeinsame Gasbereiche.", "The flights lack overlapping throttle ranges."),
+        ("Diese Segmente gehören zur selben aufgezeichneten Konfiguration.", "These segments have the same recorded settings."),
+        ("Diese Gruppe bietet die beste vergleichbare Messabdeckung.", "This group has the best comparable measurement coverage."),
+        ("Für diese Gruppe liegt ein begründeter Änderungsvorschlag vor.", "The measurements in this group support a tuning suggestion."),
+        ("Übersprungen: ", "Skipped: "),
+        ("Anderer aufgezeichneter Tune oder abweichende Lograte.", "Different recorded tune or log rate."),
+        ("Vorab-Firmware · Messwerte ausgewertet. Für diese Firmware-Version ist die CLI-Zuordnung ungeprüft.", "Prerelease firmware · Measurements available. CLI mapping for this build is unverified."),
+        ("Ohne Dump: Vor dem Einfügen das geflogene PID-Profil auswählen und die aktuellen Werte gegen die angezeigten Ausgangswerte prüfen.", "Without a dump, select the flown PID profile and check its current settings against the displayed original values before pasting commands."),
+        ("Folgerunde ohne durchgehenden Dump-Abgleich: Die im Log belegten Werte wurden geprüft.", "Follow-up without dumps for both flights. The app checked the recorded settings."),
+        ("Freiflug in ", "In-flight tracking in "),
+        (" bei Sollrate ", " at setpoint rates "),
+        (", mediane Abweichung ", ", median error "),
+        (" nahe Motorausgangsgrenze", " near motor output limits"),
+        ("Zu wenig aussagekräftige Testimpulse für eine P- oder D-Korrektur auf ", "Too few comparable stick inputs to suggest a P or D change on "),
+        ("In den erfassten Gasbereichen wurde kein auffälliges hochfrequentes D-Term-Restgeräusch für eine Filteränderung gefunden.", "No elevated high-frequency D-term noise was found in the measured throttle ranges."),
+        ("Restgeräusch in Gyro und D-Term: aktiven D-Term-Lowpass 1 vorsichtig absenken.", "Residual noise in gyro and D-term. Slightly lower the active D-term LPF1 cutoff."),
+        ("Restgeräusch im D-Term. Der aktive LPF1 liegt bereits an der vorgesehenen Untergrenze.", "Residual D-term noise. The active LPF1 is already at the lower limit used by the app."),
+        ("Überschwingen und anschließende Gegenbewegung bei niedrigem D-Term-Rauschen. D testweise erhöhen.", "Overshoot and rebound with low D-term noise. Try increasing D."),
+        ("wiederholtes Überschwingen, P testweise senken.", "Repeated overshoot. Try lowering P."),
+        ("anhaltender Rückstand bei geringem Überschwingen, P testweise erhöhen.", "Persistent lag with little overshoot. Try increasing P."),
+        (" Stickstopps mit Rückschlag und überwiegendem Feedforward-Bremsanteil. Feedforward in einem kleinen A/B-Schritt senken und Stickstopps erneut messen.", " stick stops with bounce-back and predominantly feedforward braking. Lower feedforward slightly and repeat the stick stops."),
+        ("Schmalbandige, nicht kommandierte Schwingung auf ", "Narrowband oscillation without a matching stick command on "),
+        (". Mechanik, Filterung und Reglerschwingung prüfen. Gain-Änderungen für diese Achsen zurückgestellt.", ". Check the airframe, filtering, and control-loop oscillation. Gain changes on these axes are deferred."),
+        ("A/B-Test: statischen Gyro-LPF1 leicht öffnen. Messung, Motorwärme und Flugverhalten danach erneut prüfen.", "A/B test. Relax static gyro LPF1 slightly, then recheck the measurements, motor temperature, and handling."),
+        ("Filteröffnung zurückgestellt: Prüfe RPM-Abdeckung, saubere Spektren, messbare Verzögerung und aktiven statischen LPF1.", "Filter change deferred. Check RPM coverage, clean spectra, measurable delay, and whether static LPF1 is active."),
+        ("Filter zuerst: Gains mit dem Folgeflug separat bewerten.", "Test the filter change first, then assess gains on the follow-up flight."),
+        ("P/D-Balance: Nur Achsen mit nachweislich deaktiviertem Feedforward werden für P/D-Vorschläge berücksichtigt. Dämpfung und Tracking mit vergleichbaren Testflügen getrennt prüfen.", "P/D suggestions require evidence that feedforward is disabled on that axis. Assess damping and tracking in comparable flights."),
+        ("Die Manöver oder Gasbereiche sind zu verschieden für eine Verifikation.", "The maneuvers or throttle ranges differ too much to verify the change."),
+        ("Mindestens eine vergleichbare Kennzahl hat sich deutlich verschlechtert.", "At least one comparable measurement deteriorated substantially."),
+        ("Im vergleichbaren Messbereich liegt keine deutliche Verschlechterung vor.", "No clear deterioration in the comparable measurements."),
+        ("geschätzte Verzögerung der Gyro-Filterkette", "estimated gyro filter delay"),
+        ("mediane Gegenrotation nach Stickstopp", "median reverse rotation after a stick stop"),
+        ("Rauschen vergleichbar. Für eine Aussage zum Verzögerungsgewinn fehlt eine gemeinsame Messung.", "Noise is comparable. A shared measurement is needed to assess delay."),
+        ("Starke Vibration in ", "Strong vibration in "),
+        (". Props, Motoren und Aufbau prüfen.", ". Check props, motors, and the airframe."),
+        ("Kein CLI-Vorschlag möglich. Prüfe die Hinweise zu den ausgewählten Segmenten.", "No usable tuning result. Check the notes for the selected segments."),
+        ("Kein Betaflight-Rohlog erkannt.", "No raw Betaflight log detected."),
+        ("Firmware ohne geprüfte CLI-Zuordnung: ", "Firmware without a verified CLI mapping: "),
+        ("Wähle mindestens ein Rohlog.", "Select at least one Blackbox log."),
+        ("Die Auswertung wurde abgebrochen.", "Analysis stopped."),
+        ("Python-Umgebung oder Blackbox-Decoder fehlt. Öffne die App im ursprünglichen outputs-Ordner.", "Python or the Blackbox decoder is missing. Open the app from its original outputs folder."),
+        (" gültige Impulse Roll ", " usable roll inputs "),
+        ("ruhige Filterfenster", "steady filter windows"),
+        ("Feedforward · Für die Zuordnung von Rückschlägen fehlen die PID-Term-Kanäle. Prüfe in den Blackbox-Einstellungen, ob die PID-Terme aufgezeichnet werden.", "Feedforward · Log the PID terms in Blackbox settings to identify the source of bounce-back."),
+    ]
+
+    private func reportText(_ text: String) -> String {
+        guard english else { return text }
+        return Self.reportPhrases.reduce(text) { result, phrase in
+            result.replacingOccurrences(of: phrase.0, with: phrase.1)
+        }.replacingOccurrences(of: #"Bei ([0-9.]+) belassen\."#, with: "Keep $1.", options: .regularExpression)
+         .replacingOccurrences(of: #"(.+?) um ([0-9.]+) erhöhen"#, with: "Increase $1 by $2", options: .regularExpression)
+         .replacingOccurrences(of: #"(.+?) um ([0-9.]+) senken"#, with: "Decrease $1 by $2", options: .regularExpression)
+         .replacingOccurrences(of: #"([A-Za-z -]+ Multiplier) um ([0-9.]+) zurückstellen"#, with: "Undo the $2 change to $1", options: .regularExpression)
+    }
+
+    private var stages: [String] { [tr("Ausgangsmessung", "Baseline"), tr("Nachmessen", "Follow-up"), tr("Verifizieren", "Verification")] }
 
     private var stage: Int { min(3, (baseline?.stage ?? 0) + 1) }
 
@@ -384,10 +489,17 @@ struct WorkspaceView: View {
                 Image(systemName: "waveform.path.ecg").font(.title2.weight(.semibold)).foregroundStyle(accent)
                 Text("Blackbox Auto-Tune").font(.title2.weight(.semibold))
                 Spacer()
+                Picker("Language / Sprache", selection: $language) {
+                    Text("Deutsch").tag("de")
+                    Text("English").tag("en")
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .fixedSize()
                 Button {
-                    NSWorkspace.shared.open(Analyzer.guide)
+                    NSWorkspace.shared.open(Analyzer.guide(english: english))
                 } label: {
-                    Label("Flugprotokoll", systemImage: "book")
+                    Label(tr("Flugprotokoll", "Flight guide"), systemImage: "book")
                 }
             }
             .padding(.horizontal, 22).padding(.vertical, 16)
@@ -420,12 +532,12 @@ struct WorkspaceView: View {
                                 }
                                 .buttonStyle(.plain)
                                 .disabled(number != stage && completedRounds[number] == nil)
-                                .help(number == stage ? "Zur laufenden Runde" : "Auswertung dieser Runde ansehen")
+                                .help(number == stage ? tr("Zur laufenden Runde", "Back to current round") : tr("Auswertung dieser Runde ansehen", "View this round's results"))
                             }
                         }
                         Divider()
                         VStack(alignment: .leading, spacing: 5) {
-                            Text("Blackbox-Rohlogs").font(.subheadline.weight(.semibold))
+                            Text(tr("Blackbox-Rohlogs", "Blackbox logs")).font(.subheadline.weight(.semibold))
                             Button {
                                 let selection = pickLogs()
                                 if !selection.isEmpty {
@@ -434,7 +546,7 @@ struct WorkspaceView: View {
                                     error = nil
                                 }
                             } label: {
-                                Label(logs.isEmpty ? "Logs auswählen …" : "\(logs.count) ausgewählt · Ändern",
+                                Label(logs.isEmpty ? tr("Logs auswählen …", "Select logs…") : tr("\(logs.count) ausgewählt · Ändern", "\(logs.count) selected · Change"),
                                       systemImage: "waveform")
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }.controlSize(.large)
@@ -451,12 +563,12 @@ struct WorkspaceView: View {
                                         Image(systemName: "xmark.circle")
                                     }
                                     .buttonStyle(.plain)
-                                    .accessibilityLabel("Log entfernen")
+                                    .accessibilityLabel(tr("Log entfernen", "Remove log"))
                                 }
                                 .font(.caption).foregroundStyle(.secondary)
                             }
                         }
-                        fileButton("CLI-Dump (optional)", dump, symbol: "doc.text") {
+                        fileButton(tr("CLI-Dump (optional)", "CLI dump (optional)"), dump, symbol: "doc.text") {
                             if let selected = pick(dumpText: true) {
                                 dump = selected
                                 error = nil
@@ -464,18 +576,18 @@ struct WorkspaceView: View {
                             }
                         }
                         if dump != nil {
-                            Button("Ohne Dump auswerten") {
+                            Button(tr("Ohne Dump auswerten", "Analyze without dump")) {
                                 dump = nil
                                 result = nil
                                 error = nil
                             }.buttonStyle(.link)
                         }
-                        fileButton("Flugbericht für Folgerunde (JSON)", previous, symbol: "clock.arrow.circlepath") {
+                        fileButton(tr("Flugbericht für Folgerunde (JSON)", "Previous flight report (JSON)"), previous, symbol: "clock.arrow.circlepath") {
                             guard let url = pick(json: true) else { return }
                             do {
                                 let report = try Report.load(url)
                                 guard report.stage < 3, !report.blocked else {
-                                    throw Analyzer.Failure("Dieser Bericht kann keine weitere Auswertung starten.")
+                                    throw Analyzer.Failure(tr("Dieser Bericht kann keine weitere Auswertung starten.", "This report cannot start a follow-up round."))
                                 }
                                 previous = url
                                 baseline = report
@@ -488,7 +600,7 @@ struct WorkspaceView: View {
                             }
                         }
                         if previous != nil {
-                            Button("Neue Messreihe") {
+                            Button(tr("Neue Messreihe", "New tuning session")) {
                                 previous = nil
                                 baseline = nil
                                 completedRounds = [:]
@@ -500,17 +612,17 @@ struct WorkspaceView: View {
                                 error = nil
                             }.buttonStyle(.link)
                         }
-                        DisclosureGroup("Analyseoptionen") {
+                        DisclosureGroup(tr("Analyseoptionen", "Analysis options")) {
                             if stage == 1 {
-                        Toggle("Filteröffnung als A/B-Test prüfen", isOn: $allowFilterOpening)
+                        Toggle(tr("Filteröffnung als A/B-Test prüfen", "Check whether to relax gyro filtering"), isOn: $allowFilterOpening)
                             .font(.caption)
-                            .help("Prüft in Runde 1, ob eine kleine Änderung am statischen Gyro-LPF1 mit deinen Logdaten begründet ist.")
+                            .help(tr("Prüft in Runde 1, ob eine kleine Änderung am statischen Gyro-LPF1 mit deinen Logdaten begründet ist.", "In round 1, check whether the log supports a small change to static gyro LPF1."))
                         }
                         VStack(alignment: .leading, spacing: 5) {
-                            Text("Logsegment").font(.subheadline.weight(.semibold))
-                            TextField("Alle Segmente", text: $index)
+                            Text(tr("Logsegment", "Log segment")).font(.subheadline.weight(.semibold))
+                            TextField(tr("Alle Segmente", "All segments"), text: $index)
                                 .textFieldStyle(.roundedBorder)
-                                .help("Optional: Auf dieselbe Segmentnummer ab 1 in allen Dateien begrenzen.")
+                                .help(tr("Optional: Auf dieselbe Segmentnummer ab 1 in allen Dateien begrenzen.", "Optional. Use the same segment number in all logs, starting at 1."))
                         }
                         }
                         .onChange(of: index) { _ in result = nil; error = nil }
@@ -520,7 +632,7 @@ struct WorkspaceView: View {
                         } label: {
                             HStack {
                                 if busy { ProgressView().controlSize(.small) }
-                                Text(busy ? "Analysiere …" : "Runde analysieren").fontWeight(.semibold)
+                                Text(busy ? tr("Analysiere …", "Analyzing…") : tr("Runde analysieren", "Analyze round")).fontWeight(.semibold)
                             }.frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
@@ -538,7 +650,7 @@ struct WorkspaceView: View {
                     VStack(alignment: .leading, spacing: 16) {
                         if reviewing == nil, let error {
                             Label {
-                                Text(error).textSelection(.enabled)
+                                Text(reportText(error)).textSelection(.enabled)
                             } icon: {
                                 Image(systemName: "exclamationmark.triangle")
                             }
@@ -553,19 +665,19 @@ struct WorkspaceView: View {
                             results(result)
                         } else {
                             VStack(alignment: .leading, spacing: 14) {
-                                Text(stage == 1 ? "Erster Testflug" : "Testflug für Runde \(stage)")
+                                Text(stage == 1 ? tr("Erster Testflug", "First test flight") : tr("Testflug für Runde \(stage)", "Test flight for round \(stage)"))
                                     .font(.largeTitle.weight(.semibold))
                                 if stage > 1 {
                                     Text(baseline?.hasRecommendation == true
-                                         ? "Übernimm den Vorschlag aus der letzten Runde. Wiederhole dieselben Passagen und Manöver mit vergleichbarem Tempo und Gas."
-                                         : "Ergänze die fehlenden Manöver oder Gasbereiche aus der letzten Auswertung. Wiederhole auch die bisherigen Passagen für den Vergleich.")
+                                         ? tr("Übernimm den Vorschlag aus der letzten Runde. Wiederhole dieselben Passagen und Manöver mit vergleichbarem Tempo und Gas.", "Apply the previous suggestion. Repeat the same passes and maneuvers at a similar speed and throttle.")
+                                         : tr("Ergänze die fehlenden Manöver oder Gasbereiche aus der letzten Auswertung. Wiederhole auch die bisherigen Passagen für den Vergleich.", "Add the maneuvers or throttle ranges that were missing. Repeat the original passes for comparison."))
                                 }
-                                Label("Ein Flug, ein Log · Flieg die Abschnitte nacheinander mit denselben Einstellungen.", systemImage: "doc")
-                                Label("Flugmodus · Flieg den gesamten Test in Acro (Air).", systemImage: "switch.2")
-                                Label("Filter · Flieg ein paar Sekunden ruhig geradeaus mit möglichst konstantem Gas. Wiederhole die Gerade mit etwas mehr Gas. Mach die Wendungen dazwischen. Ruhiges Schweben geht ebenfalls, liefert aber oft nur einen Gasbereich.", systemImage: "waveform")
-                                Label("PID und Feedforward · Flieg mehrere einzelne Rolls nach links und rechts und Flips vorwärts und rückwärts. Bewege jeweils nur eine Achse, lass den Stick nach jeder Bewegung zur Mitte zurück und stabilisiere den Quad vor der nächsten. Halte etwas Gasreserve und vermeide Vollgas.", systemImage: "scope")
-                                Label("Optional für Propwash · Sink mehrmals mit wenig Gas und möglichst wenig Roll- und Pitch-Eingabe. Fang den Quad jeweils mit einem kurzen, gleichmässigen Gasimpuls ab. Wiederhole ungefähr denselben Gaswechsel.", systemImage: "wind")
-                                Text("Wähle danach die Blackbox-Logs aus. Du kannst mehrere Flüge mit denselben Einstellungen gemeinsam auswerten. Der CLI-Dump ist optional.")
+                                Label(tr("Ein Flug, ein Log · Flieg die Abschnitte nacheinander mit denselben Einstellungen.", "One flight, one log · Fly both parts in sequence with the same settings."), systemImage: "doc")
+                                Label(tr("Flugmodus · Flieg den gesamten Test in Acro (Air).", "Flight mode · Fly the whole test in Acro (Air)."), systemImage: "switch.2")
+                                Label(tr("Filter · Flieg ein paar Sekunden ruhig geradeaus mit möglichst konstantem Gas. Wiederhole die Gerade mit etwas mehr Gas. Mach die Wendungen dazwischen. Ruhiges Schweben geht ebenfalls, liefert aber oft nur einen Gasbereich.", "Filters · Fly straight for a few seconds at roughly steady throttle. Repeat with a little more throttle. Turn between passes. A steady hover usually covers only one throttle range."), systemImage: "waveform")
+                                Label(tr("PID und Feedforward · Flieg mehrere einzelne Rolls nach links und rechts und Flips vorwärts und rückwärts. Bewege jeweils nur eine Achse, lass den Stick nach jeder Bewegung zur Mitte zurück und stabilisiere den Quad vor der nächsten. Halte etwas Gasreserve und vermeide Vollgas.", "PID and feedforward · Fly a few separate rolls and flips in each direction. Move one axis at a time, center the stick afterward, and let the quad settle before the next move. Leave some throttle in reserve."), systemImage: "scope")
+                                Label(tr("Optional für Propwash · Sink mehrmals mit wenig Gas und möglichst wenig Roll- und Pitch-Eingabe. Fang den Quad jeweils mit einem kurzen, gleichmässigen Gasimpuls ab. Wiederhole ungefähr denselben Gaswechsel.", "Optional propwash test · Descend at low throttle with minimal roll or pitch input. Catch the descent with a short, steady throttle increase. Repeat at roughly the same throttle levels."), systemImage: "wind")
+                                Text(tr("Wähle danach die Blackbox-Logs aus. Du kannst mehrere Flüge mit denselben Einstellungen gemeinsam auswerten. Der CLI-Dump ist optional.", "Load your Blackbox logs after the flight. You can analyze several flights together if they use the same settings. A CLI dump is optional."))
                                     .foregroundStyle(.secondary)
                             }
                             .frame(maxWidth: 620, alignment: .leading)
@@ -589,7 +701,7 @@ struct WorkspaceView: View {
             Button(action: action) {
                 HStack {
                     Image(systemName: symbol).foregroundStyle(url == nil ? Color.secondary : accent)
-                    Text(url?.lastPathComponent ?? "Datei auswählen …").lineLimit(1).truncationMode(.middle)
+                    Text(url?.lastPathComponent ?? tr("Datei auswählen …", "Choose a file…")).lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 4)
                     Image(systemName: "folder").foregroundStyle(.secondary)
                 }.frame(maxWidth: .infinity, alignment: .leading)
@@ -604,21 +716,21 @@ struct WorkspaceView: View {
         let report = result.report
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("Runde \(report.stage) · \(stages[report.stage - 1])")
+                Text(tr("Runde \(report.stage) · \(stages[report.stage - 1])", "Round \(report.stage) · \(stages[report.stage - 1])"))
                     .font(.title2.weight(.semibold))
                 let segments = report.logs?.count ?? 1
-                let profile = report.profile.map { " · Profil \($0)" } ?? ""
-                Text("\(report.firmware)\(profile) · \(report.metrics.hz) Hz · \(segments) \(segments == 1 ? "Segment" : "Segmente")")
+                let profile = report.profile.map { tr(" · Profil \($0)", " · Profile \($0)") } ?? ""
+                Text("\(report.firmware)\(profile) · \(report.metrics.hz) Hz · \(segments) \(segments == 1 ? "Segment" : tr("Segmente", "segments"))")
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
             Spacer(minLength: 4)
             if reviewing != nil {
-                Button("Weiter zu Runde \(stage)") { reviewing = nil }
+                Button(tr("Weiter zu Runde \(stage)", "Return to round \(stage)")) { reviewing = nil }
                     .buttonStyle(.borderedProminent).tint(accent)
                     .fixedSize()
             } else if report.stage < 3 && !report.blocked {
-                Button("Runde \(report.stage + 1) vorbereiten") {
+                Button(tr("Runde \(report.stage + 1) vorbereiten", "Prepare round \(report.stage + 1)")) {
                     previous = result.url
                     baseline = report
                     logs = []
@@ -631,7 +743,7 @@ struct WorkspaceView: View {
                 .fixedSize()
             }
         }
-        Label(report.status, systemImage: report.diagnostic == true ? "info.circle" :
+        Label(reportText(report.status), systemImage: report.diagnostic == true ? "info.circle" :
               report.blocked ? "exclamationmark.triangle" : !report.hasRecommendation ? "minus.circle" : "slider.horizontal.3")
             .font(.headline)
             .foregroundStyle(report.diagnostic == true || (!report.blocked && !report.hasRecommendation && report.slider_comparison == nil)
@@ -641,43 +753,43 @@ struct WorkspaceView: View {
                $0.hasPrefix("Für die Filterprüfung") || $0.hasPrefix("Die Manöver") ||
                $0.hasPrefix("Mindestens eine") || $0.hasPrefix("Starke Vibration")
            }) {
-            Text(reason).foregroundStyle(.secondary)
+            Text(reportText(reason)).foregroundStyle(.secondary)
         }
         if report.diagnostic == true {
-            Text("Messwerte für diesen Vorab-Build. Die CLI-Zuordnung ist ungeprüft.")
+            Text(tr("Messwerte für diesen Vorab-Build. Die CLI-Zuordnung ist ungeprüft.", "Measurements for this prerelease build. Its CLI parameter mapping is unverified."))
                 .foregroundStyle(.secondary)
         }
         if let comparison = report.slider_comparison {
-            Text(comparison).font(.callout).textSelection(.enabled)
+            Text(reportText(comparison)).font(.callout).textSelection(.enabled)
         }
         if let guidance = report.slider_guidance?.filter({ $0.hasPrefix("PID und Feedforward ·") }),
            !guidance.isEmpty {
-            ForEach(guidance, id: \.self) { Text($0) }
+            ForEach(guidance, id: \.self) { Text(reportText($0)) }
         }
         if !report.changes.isEmpty {
             if report.profile == nil {
                 let expected = report.changes.keys.sorted().compactMap { key in
                     report.config[key].map { "\(key) = \($0)" }
                 }.joined(separator: "\n")
-                DisclosureGroup("Aktuelle Werte im Betaflight-Profil prüfen") {
+                DisclosureGroup(tr("Aktuelle Werte im Betaflight-Profil prüfen", "Check current Betaflight profile values")) {
                     Text(expected).font(.system(.callout, design: .monospaced))
                         .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            cliCard(report.blocked ? "Rücknahme der letzten Änderung" : "CLI-Vorschlag", report.changeBlock)
-            Text("CLI am disarmten Quad einfügen, Antworten prüfen und separat mit save übernehmen.")
+            cliCard(report.blocked ? tr("Rücknahme der letzten Änderung", "Undo previous change") : tr("CLI-Vorschlag", "Suggested CLI commands"), report.changeBlock)
+            Text(tr("CLI am disarmten Quad einfügen, Antworten prüfen und separat mit save übernehmen.", "Paste into the CLI while disarmed. Check the responses, then run save separately."))
                 .font(.caption).foregroundStyle(.secondary)
             if !report.blocked {
                 DisclosureGroup {
-                    cliCard("Ursprüngliche Werte", report.undoBlock)
+                    cliCard(tr("Ursprüngliche Werte", "Original values"), report.undoBlock)
                 } label: {
-                    Text("Rücknahmebefehle anzeigen").font(.subheadline)
+                    Text(tr("Rücknahmebefehle anzeigen", "Show rollback commands")).font(.subheadline)
                 }
             }
         }
-        Text("Tune-Übersicht").font(.title2.weight(.semibold)).padding(.top, 4)
+        Text(tr("Tune-Übersicht", "Tune overview")).font(.title2.weight(.semibold)).padding(.top, 4)
         missingManeuvers(report)
-        Text("Sollwertfolge im Freiflug").font(.headline)
+        Text(tr("Sollwertfolge im Freiflug", "Setpoint tracking in flight")).font(.headline)
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 165), spacing: 10, alignment: .top)], spacing: 10) {
             ForEach(["roll", "pitch", "yaw"], id: \.self) { axis in
                 let tracking = report.logs?.compactMap { $0.metrics.tracking?[axis] } ?? []
@@ -686,7 +798,7 @@ struct WorkspaceView: View {
             }
         }
         sliderCard("Master Multiplier", kind: "master", report)
-        Text("P/D-Dämpfung").font(.headline)
+        Text(tr("P/D-Dämpfung", "P/D damping")).font(.headline)
         LazyVGrid(columns: ratingColumns, spacing: 10) {
             ForEach(["roll", "pitch"], id: \.self) { axis in
                 dampingCard(axis, report, result.previous)
@@ -694,14 +806,14 @@ struct WorkspaceView: View {
         }
         let feedforwardTips = report.coverageTips.filter { $0.hasPrefix("Feedforward ·") }
         if !report.blocked && report.stage < 3 && !feedforwardTips.isEmpty {
-            DisclosureGroup("Messhinweise für Feedforward") {
+            DisclosureGroup(tr("Messhinweise für Feedforward", "Feedforward measurement tips")) {
                 VStack(alignment: .leading, spacing: 6) {
-                    ForEach(feedforwardTips, id: \.self) { Text($0) }
+                    ForEach(feedforwardTips, id: \.self) { Text(reportText($0)) }
                 }
                 .font(.callout).foregroundStyle(.secondary).padding(.vertical, 8)
             }
         }
-        Text("Filter und Gasbereiche").font(.headline)
+        Text(tr("Filter und Gasbereiche", "Filters and throttle ranges")).font(.headline)
         LazyVGrid(columns: ratingColumns, spacing: 10) {
             ForEach(["low", "mid"], id: \.self) { band in
                 filterCard(band, report)
@@ -712,7 +824,7 @@ struct WorkspaceView: View {
             sliderCard("D-Term Filter Multiplier", kind: "dterm", report, directLabel: "D-Term-LPF1")
         }
         if let logs = report.logs {
-            DisclosureGroup("Frequenzkarte und Gyro-Filterverzögerung") {
+            DisclosureGroup(tr("Frequenzkarte und Gyro-Filterverzögerung", "Frequency map and gyro filter delay")) {
                 VStack(alignment: .leading, spacing: 15) {
                     ForEach(Array(logs.enumerated()), id: \.offset) { _, log in
                         if let profile = log.metrics.filter_profile {
@@ -721,42 +833,42 @@ struct WorkspaceView: View {
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
             }
-            DisclosureGroup("Geschätzte Sprungantwort") {
-                StepPanel(current: logs, previous: result.previous?.logs ?? [])
+            DisclosureGroup(tr("Geschätzte Sprungantwort", "Estimated step response")) {
+                StepPanel(current: logs, previous: result.previous?.logs ?? [], english: english)
             }
 
         }
         if let logs = report.logs, logs.contains(where: { $0.metrics.short_events != nil }) {
-            DisclosureGroup("Kurze Schwingungen und Abfangmanöver") {
+            DisclosureGroup(tr("Kurze Schwingungen und Abfangmanöver", "Short oscillations and throttle recoveries")) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Zeit ab Segmentbeginn. Auffälligkeiten bei kleinem Stickbefehl können durch Propwash, Regelung oder Mechanik entstehen.")
+                    Text(tr("Zeit ab Segmentbeginn. Auffälligkeiten bei kleinem Stickbefehl können durch Propwash, Regelung oder Mechanik entstehen.", "Times are relative to the segment start. Oscillations at low stick input may come from propwash, the controller, or the airframe."))
                         .foregroundStyle(.secondary)
                     ForEach(Array(logs.enumerated()), id: \.offset) { _, log in
                         if let events = log.metrics.short_events, !events.isEmpty {
                             Text(log.file).font(.headline)
                             ForEach(Array(events.enumerated()), id: \.offset) { _, event in
-                                Text(String(format: "%.2f s · %@ · %.0f Hz · %.0f %% Gas · %.1f °/s RMS",
-                                            event.seconds, event.axis.capitalized, event.hz, event.gas * 100, event.rms))
+                                Text(String(format: "%.2f s · %@ · %.0f Hz · %.0f %% %@ · %.1f °/s RMS",
+                                            event.seconds, event.axis.capitalized, event.hz, event.gas * 100, tr("Gas", "throttle"), event.rms))
                             }
                         }
                     }
                     if logs.allSatisfy({ $0.metrics.short_events?.isEmpty != false }) {
-                        Text("Keine auffälligen kurzen Schwingungen im geprüften Frequenzbereich.")
+                        Text(tr("Keine auffälligen kurzen Schwingungen im geprüften Frequenzbereich.", "No short oscillations flagged in the tested frequency range."))
                     }
-                    Text("Abfangen und Propwash").font(.headline)
+                    Text(tr("Abfangen und Propwash", "Throttle recovery and propwash")).font(.headline)
                     let recoveries = report.metrics.recovery_summary ?? [:]
                     if recoveries.isEmpty {
-                        Text("Weniger als drei auswertbare Abfangmanöver mit ähnlichem Gaswechsel.")
+                        Text(tr("Weniger als drei auswertbare Abfangmanöver mit ähnlichem Gaswechsel.", "Fewer than three usable recoveries with similar throttle changes."))
                     }
                     ForEach(recoveries.keys.sorted(), id: \.self) { gas in
                         if let current = recoveries[gas] {
                             let old = result.previous?.metrics.recovery_summary?[gas]
                             let value = String(format: "%.1f °/s RMS · %.1f s", current.error_rms, current.duration)
                             let before = old.map { String(format: "%.1f °/s RMS · %.1f s → ", $0.error_rms, $0.duration) } ?? ""
-                            Text("Gas \(gas) · \(before)\(value) · \(current.count) aktuelle Manöver")
+                            Text(tr("Gas \(gas) · \(before)\(value) · \(current.count) aktuelle Manöver", "Throttle \(gas) · \(before)\(value) · \(current.count) current maneuvers"))
                         }
                     }
-                    Text("Median des höchsten kurzen Roll-/Pitch-Sollwertfehlers nach dem Gasimpuls. Die Dauer zählt bis zum letzten Messfenster über 5 °/s, maximal 0,6 s.")
+                    Text(tr("Median des höchsten kurzen Roll-/Pitch-Sollwertfehlers nach dem Gasimpuls. Die Dauer zählt bis zum letzten Messfenster über 5 °/s, maximal 0,6 s.", "Median peak short-window roll or pitch tracking error after adding throttle. Duration runs to the last window above 5 °/s, up to 0.6 s."))
                         .foregroundStyle(.secondary)
                 }
                 .font(.callout)
@@ -764,17 +876,17 @@ struct WorkspaceView: View {
             }
         }
         if let selection = report.selection {
-            DisclosureGroup("Logauswahl · \(selection.used.count) verwendet")
+            DisclosureGroup(tr("Logauswahl · \(selection.used.count) verwendet", "Log selection · \(selection.used.count) used"))
             {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(selection.reason)
+                    Text(reportText(selection.reason))
                     ForEach(selection.used, id: \.self) { Text($0) }
                     if !selection.other.isEmpty {
-                        Text("Andere Konfiguration oder Lograte").fontWeight(.semibold)
+                        Text(tr("Andere Konfiguration oder Lograte", "Different settings or log rate")).fontWeight(.semibold)
                         ForEach(selection.other, id: \.self) { Text($0) }
                     }
                     if selection.skipped_count > selection.other.count {
-                        Text("Weitere übersprungene Segmente stehen in den Analysehinweisen.")
+                        Text(tr("Weitere übersprungene Segmente stehen in den Analysehinweisen.", "See the analysis notes for other skipped segments."))
                     }
                 }
                 .font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
@@ -782,10 +894,10 @@ struct WorkspaceView: View {
             }
         }
         if !report.notes.isEmpty {
-            DisclosureGroup("Analysehinweise") {
+            DisclosureGroup(tr("Analysehinweise", "Analysis notes")) {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(Array(report.notes.enumerated()), id: \.offset) { _, note in
-                        Label(note, systemImage: "info.circle").font(.callout)
+                        Label(reportText(note), systemImage: "info.circle").font(.callout)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
             }
@@ -793,7 +905,7 @@ struct WorkspaceView: View {
         Button {
             NSWorkspace.shared.activateFileViewerSelecting([result.url])
         } label: {
-            Label("Bericht im Finder zeigen", systemImage: "folder")
+            Label(tr("Bericht im Finder zeigen", "Show report in Finder"), systemImage: "folder")
                 .font(.callout).foregroundStyle(.secondary)
         }
         .buttonStyle(.plain)
@@ -816,33 +928,33 @@ struct WorkspaceView: View {
         let needYaw = missingTracking.contains("yaw")
         if missingLow || missingMid || needRoll || needPitch || needYaw {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Was im nächsten Flug noch fehlt").font(.headline)
+                Text(tr("Was im nächsten Flug noch fehlt", "What to fly next")).font(.headline)
                 if missingLow || missingMid {
                     let passes = missingLow && missingMid
-                        ? "Flieg erst gemütlich geradeaus, dann eine zweite Gerade mit etwas mehr Gas."
-                        : missingLow ? "Flieg eine gemütliche Gerade mit weniger Gas."
-                        : "Flieg eine Gerade mit etwas mehr Gas als beim gemütlichen Vorwärtsflug."
+                        ? tr("Flieg erst gemütlich geradeaus, dann eine zweite Gerade mit etwas mehr Gas.", "Fly one easy straight pass, then another with a little more throttle.")
+                        : missingLow ? tr("Flieg eine gemütliche Gerade mit weniger Gas.", "Fly an easy straight pass at lower throttle.")
+                        : tr("Flieg eine Gerade mit etwas mehr Gas als beim gemütlichen Vorwärtsflug.", "Fly a straight pass with a little more throttle than in easy forward flight.")
                     Label {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(passes + " Lass das Gas ein paar Sekunden ungefähr gleich und wende danach.")
-                            Text(masterOpen ? "Für Gyro-Filter, D-Term-Filter und Master-Vergleich" : "Für Gyro- und D-Term-Filter")
+                            Text(passes + tr(" Lass das Gas ein paar Sekunden ungefähr gleich und wende danach.", " Hold roughly the same throttle for a few seconds, then turn."))
+                            Text(masterOpen ? tr("Für Gyro-Filter, D-Term-Filter und Master-Vergleich", "For gyro filters, D-term filters, and the master multiplier comparison") : tr("Für Gyro- und D-Term-Filter", "For gyro and D-term filters"))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     } icon: { Image(systemName: "waveform").foregroundStyle(TuneRating.open.color) }
                 }
                 if needRoll || needPitch {
-                    let moves = needRoll && needPitch ? "ein paar einzelne Rolls und Flips" :
-                        needRoll ? "ein paar einzelne Rolls" : "ein paar einzelne Flips"
+                    let moves = needRoll && needPitch ? tr("ein paar einzelne Rolls und Flips", "a few separate rolls and flips") :
+                        needRoll ? tr("ein paar einzelne Rolls", "a few separate rolls") : tr("ein paar einzelne Flips", "a few separate flips")
                     Label {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("Flieg \(moves) in beide Richtungen. Lass den Stick nach jeder Bewegung zur Mitte zurück.")
-                            Text(masterOpen ? "Für P/D-Dämpfung, Sollwertfolge und Master-Vergleich" : "Für P/D-Dämpfung und Sollwertfolge")
+                            Text(tr("Flieg \(moves) in beide Richtungen. Lass den Stick nach jeder Bewegung zur Mitte zurück.", "Fly \(moves) in both directions. Center the stick after each move."))
+                            Text(masterOpen ? tr("Für P/D-Dämpfung, Sollwertfolge und Master-Vergleich", "For P/D damping, tracking, and the master multiplier comparison") : tr("Für P/D-Dämpfung und Sollwertfolge", "For P/D damping and tracking"))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     } icon: { Image(systemName: "scope").foregroundStyle(TuneRating.open.color) }
                 }
                 if needYaw {
-                    Label("Dreh die Nase ein paarmal nach links und rechts. Das ergänzt die Yaw-Sollwertfolge.",
+                    Label(tr("Dreh die Nase ein paarmal nach links und rechts. Das ergänzt die Yaw-Sollwertfolge.", "Yaw left and right a few times to fill in yaw tracking."),
                           systemImage: "arrow.left.and.right")
                 }
             }
@@ -861,7 +973,7 @@ struct WorkspaceView: View {
                                           @ViewBuilder detail: () -> Detail) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             Text(title).font(.headline)
-            Label(rating.title, systemImage: rating.icon)
+            Label(rating.title(english), systemImage: rating.icon)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(rating.color)
                 .padding(.horizontal, 8).padding(.vertical, 4)
@@ -887,22 +999,22 @@ struct WorkspaceView: View {
         let guidance = report.slider_guidance ?? []
         if let slider = report.relative_slider, slider.kind == kind ||
             (slider.kind == nil && slider.instruction.hasPrefix(title + " ")) {
-            ratingCard(title, .check, action: slider.undo) {
-                Text(slider.instruction).fontWeight(.semibold).foregroundStyle(.primary)
-                Text(slider.reason)
-                Text("Ändere nur diesen Slider im Configurator. Merke dir den Ausgangswert und prüfe nach dem Flug die Motorwärme.")
+            ratingCard(title, .check, action: reportText(slider.undo)) {
+                Text(reportText(slider.instruction)).fontWeight(.semibold).foregroundStyle(.primary)
+                Text(reportText(slider.reason))
+                Text(tr("Ändere nur diesen Slider im Configurator. Merke dir den Ausgangswert und prüfe nach dem Flug die Motorwärme.", "Change only this slider in Configurator. Note the original value and check motor temperature after the flight."))
             }
         } else {
             let line = guidance.first { $0.hasPrefix(prefix) }
             let direct = directLabel.flatMap { label in guidance.first { $0.hasPrefix(label + " · ") } }
             let detail = line.map { String($0.dropFirst(prefix.count)) }
-               ?? direct.map { "Vorschlag am Tiefpass. " + $0 }
-               ?? (report.diagnostic == true ? "CLI-Zuordnung für diesen Build ungeprüft."
-                   : report.blocked ? "Slider-Bewertung zurückgestellt."
-                   : "Für diesen Bericht liegt keine Slider-Bewertung vor.")
+               ?? direct.map { tr("Vorschlag am Tiefpass. ", "Low-pass filter suggestion. ") + $0 }
+               ?? (report.diagnostic == true ? tr("CLI-Zuordnung für diesen Build ungeprüft.", "CLI mapping for this build is unverified.")
+                   : report.blocked ? tr("Slider-Bewertung zurückgestellt.", "Slider assessment deferred.")
+                   : tr("Für diesen Bericht liegt keine Slider-Bewertung vor.", "This report has no slider assessment."))
             let rating: TuneRating = direct != nil || detail.contains("Schwingungen") || detail.hasPrefix("D-Term-Rauschen")
                 ? .check : detail.hasPrefix("Messung offen") || (line == nil && direct == nil) ? .open : .measured
-            ratingCard(title, rating, action: detail.hasPrefix("Messung offen") ? "" : detail) { EmptyView() }
+            ratingCard(title, rating, action: detail.hasPrefix("Messung offen") ? "" : reportText(detail)) { EmptyView() }
         }
     }
 
@@ -916,36 +1028,36 @@ struct WorkspaceView: View {
         if let target = report.changes[feedforwardKey], let current = report.config[feedforwardKey] {
             rating = .check
             action = report.blocked
-                ? "Feedforward zurückstellen (\(current) → \(target))."
-                : "Feedforward testen (\(current) → \(target)) und die Stickstopps wiederholen."
+                ? tr("Feedforward zurückstellen (\(current) → \(target)).", "Restore feedforward (\(current) → \(target)).")
+                : tr("Feedforward testen (\(current) → \(target)) und die Stickstopps wiederholen.", "Test feedforward (\(current) → \(target)) and repeat the stick stops.")
         } else if ["p", "d", "d_min", "d_max"].contains(where: { report.changes["\($0)_\(axis)"] != nil }) {
             rating = .check
-            action = report.blocked ? "PID-Rücknahme oben prüfen." : "PID-Vorschlag oben testen und ähnliche Manöver wiederholen."
+            action = report.blocked ? tr("PID-Rücknahme oben prüfen.", "Review the PID rollback above.") : tr("PID-Vorschlag oben testen und ähnliche Manöver wiederholen.", "Try the PID suggestion above and repeat similar maneuvers.")
         } else if seconds < 2 || error == nil {
             rating = .open
             action = ""
         } else if let error, error > 0.10 {
             rating = .check
             action = measured.contains { $0.near_motor_limit > 0.05 }
-                ? "Wiederhole die Bewegung mit mehr Gasreserve."
-                : "Wiederhole ähnliche Bewegungen. Prüfe die betroffene Achse im Folgeflug."
+                ? tr("Wiederhole die Bewegung mit mehr Gasreserve.", "Repeat the movement with more throttle in reserve.")
+                : tr("Wiederhole ähnliche Bewegungen. Prüfe die betroffene Achse im Folgeflug.", "Repeat similar movements and check this axis on the follow-up flight.")
         } else {
             rating = .good
             action = report.relative_slider?.kind == "master" && axis != "yaw"
-                ? "Beim Master-Test die Sollwertfolge mit ähnlichen Manövern vergleichen."
-                : "Einstellung beibehalten."
+                ? tr("Beim Master-Test die Sollwertfolge mit ähnlichen Manövern vergleichen.", "Repeat similar maneuvers to compare tracking during the master test.")
+                : tr("Einstellung beibehalten.", "Keep the current setting.")
         }
         return ratingCard(axis.capitalized, rating, action: action) {
             if let error {
-                Text(String(format: "Bis %.0f %% medianer Fehler · %.1f s Bewegung", error * 100, seconds))
-                    .help("Höchster Median über die verwendeten Segmente bei Sollraten ab 120 °/s und verfügbarer Motorreserve.")
+                Text(String(format: tr("Bis %.0f %% medianer Fehler · %.1f s Bewegung", "Up to %.0f %% median error · %.1f s of movement"), error * 100, seconds))
+                    .help(tr("Höchster Median über die verwendeten Segmente bei Sollraten ab 120 °/s und verfügbarer Motorreserve.", "Highest segment median at setpoint rates of 120 °/s or more with motor headroom."))
             }
             if let minGain = gains.min(), let maxGain = gains.max() {
                 let range = maxGain - minGain >= 0.01
                     ? String(format: "%.2f–%.2f×", minGain, maxGain)
                     : String(format: "%.2f×", minGain)
-                Text("Amplitudenverhältnis · \(range)")
-                    .help("Geschätzte Reaktion im Freiflug bei 5–12 Hz. 1,00× entspricht gleicher Amplitude von Sollwert und Gyro.")
+                Text(tr("Amplitudenverhältnis · \(range)", "Amplitude ratio · \(range)"))
+                    .help(tr("Geschätzte Reaktion im Freiflug bei 5–12 Hz. 1,00× entspricht gleicher Amplitude von Sollwert und Gyro.", "Estimated response in flight at 5–12 Hz. A ratio of 1.00× means setpoint and gyro amplitudes match."))
             }
         }
     }
@@ -959,11 +1071,11 @@ struct WorkspaceView: View {
         if let overshoot {
             if overshoot > 0.20 {
                 rating = .check
-                action = "Wiederhole die Bewegung und prüfe, ob der Rückschlag erneut auftritt."
+                action = tr("Wiederhole die Bewegung und prüfe, ob der Rückschlag erneut auftritt.", "Repeat the movement and check whether bounce-back recurs.")
             } else {
                 rating = overshoot <= 0.10 ? .good : .measured
-                action = overshoot <= 0.10 ? "Dämpfung beibehalten."
-                    : "Vergleiche das Überschwingen bei ähnlichen Manövern im Folgeflug."
+                action = overshoot <= 0.10 ? tr("Dämpfung beibehalten.", "Keep the current damping.")
+                    : tr("Vergleiche das Überschwingen bei ähnlichen Manövern im Folgeflug.", "Compare overshoot during similar maneuvers on the follow-up flight.")
             }
         } else {
             rating = .open
@@ -971,7 +1083,7 @@ struct WorkspaceView: View {
         }
         return ratingCard(axis.capitalized, rating, action: action) {
             if let overshoot {
-                Text("Überschwingen \(percent(overshoot, old))")
+                Text(tr("Überschwingen \(percent(overshoot, old))", "Overshoot \(percent(overshoot, old))"))
             }
         }
     }
@@ -982,18 +1094,18 @@ struct WorkspaceView: View {
             let delays = ["roll", "pitch"].compactMap { axis in
                 profile.phase_delay_ms[axis].map { String(format: "%@ %.1f ms", axis.capitalized, $0) }
             }
-            Text(delays.isEmpty ? "Gyro-Filterverzögerung: Datenabdeckung fehlt"
-                 : "Geschätzte Gyro-Filterkette · " + delays.joined(separator: " · "))
+            Text(delays.isEmpty ? tr("Gyro-Filterverzögerung: Datenabdeckung fehlt", "Gyro filter delay unavailable")
+                 : tr("Geschätzte Gyro-Filterkette · ", "Estimated gyro filter delay · ") + delays.joined(separator: " · "))
             if let correlation = profile.rpm_peak_correlation {
-                Text(String(format: "Rohgyro-Spitze ↔ eRPM · r = %.2f", correlation))
-                    .help("Korrelation der dominanten Rohgyro-Spitze mit geloggter elektrischer Drehzahl. Ein Hinweis, kein Nachweis der mechanischen Ursache.")
+                Text(String(format: tr("Rohgyro-Spitze ↔ eRPM · r = %.2f", "Raw gyro peak ↔ eRPM · r = %.2f"), correlation))
+                    .help(tr("Korrelation der dominanten Rohgyro-Spitze mit geloggter elektrischer Drehzahl. Ein Hinweis, kein Nachweis der mechanischen Ursache.", "Correlation of the dominant raw gyro peak with logged electrical RPM. Treat it as a clue to the source."))
             }
             if let frequencies = profile.bands.compactMap(\.frequency_hz).first {
-                Text("25-Hz-Bänder · von \(Int(frequencies.first ?? 0)) bis \(Int(frequencies.last ?? 0)) Hz (Bandmitten)")
+                Text(tr("25-Hz-Bänder · von \(Int(frequencies.first ?? 0)) bis \(Int(frequencies.last ?? 0)) Hz (Bandmitten)", "25 Hz bands · \(Int(frequencies.first ?? 0)) to \(Int(frequencies.last ?? 0)) Hz (band centers)"))
                     .foregroundStyle(.secondary)
                 ForEach(["Rohgyro", "Gefiltertes Gyro", "D-Term"], id: \.self) { signal in
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(signal).fontWeight(.semibold)
+                        Text(signal == "Rohgyro" ? tr("Rohgyro", "Raw gyro") : signal == "Gefiltertes Gyro" ? tr("Gefiltertes Gyro", "Filtered gyro") : signal).fontWeight(.semibold)
                         let peak: Double = profile.bands.flatMap { (row: FilterSpectrum) -> [Double] in
                             signal == "D-Term" ? (row.dterm ?? []) : (row.raw ?? []) + (row.gyro ?? [])
                         }.max() ?? 1
@@ -1009,13 +1121,13 @@ struct WorkspaceView: View {
                                             .help(String(format: "%.1f Hz · %.2f RMS", frequencies[i], value))
                                     }
                                 } else {
-                                    Text("Zu wenig Daten (\(row.windows) Fenster)").foregroundStyle(.secondary)
+                                    Text(tr("Zu wenig Daten (\(row.windows) Fenster)", "Too little data (\(row.windows) windows)")).foregroundStyle(.secondary)
                                 }
                             }
                         }
                     }
                 }
-                Text("Pro Segment haben beide Gyro-Karten dieselbe Farbskala in °/s RMS. Der D-Term hat eine eigene Skala. Hellere Felder zeigen stärkere Schwingungen.")
+                Text(tr("Pro Segment haben beide Gyro-Karten dieselbe Farbskala in °/s RMS. Der D-Term hat eine eigene Skala. Hellere Felder zeigen stärkere Schwingungen.", "In each segment, both gyro maps share a color scale in °/s RMS. D-term uses a separate scale. Brighter cells indicate stronger oscillations."))
                     .foregroundStyle(.secondary)
             }
         }.font(.caption).frame(maxWidth: .infinity, alignment: .leading)
@@ -1034,19 +1146,19 @@ struct WorkspaceView: View {
         if !measured {
             action = ""
         } else if strong {
-            action = "Prüfe Props und Motoren und miss den Gasbereich erneut."
+            action = tr("Prüfe Props und Motoren und miss den Gasbereich erneut.", "Check the props and motors, then repeat this throttle range.")
         } else if noisy {
             let filterChange = report.changes.keys.contains { $0.hasPrefix("dterm_lpf") }
                 || report.relative_slider?.instruction.hasPrefix("D-Term Filter") == true
             action = filterChange
-                ? "Teste die Filterempfehlung und wiederhole dieselbe Gerade."
-                : "Wiederhole eine ruhige Gerade in diesem Gasbereich, um das Rauschen zu bestätigen."
+                ? tr("Teste die Filterempfehlung und wiederhole dieselbe Gerade.", "Try the filter suggestion and repeat the same straight pass.")
+                : tr("Wiederhole eine ruhige Gerade in diesem Gasbereich, um das Rauschen zu bestätigen.", "Repeat a steady straight pass at this throttle to confirm the noise.")
         } else {
             action = ["gyro", "dterm"].contains(report.relative_slider?.kind ?? "")
-                ? "Miss diesen Gasbereich nach dem Slider-Test erneut."
-                : "Filter für diesen Messbereich beibehalten."
+                ? tr("Miss diesen Gasbereich nach dem Slider-Test erneut.", "Repeat this throttle range after testing the slider change.")
+                : tr("Filter für diesen Messbereich beibehalten.", "Keep the current filters for this throttle range.")
         }
-        return ratingCard("Gas \(range)", rating, action: action) {
+        return ratingCard(tr("Gas \(range)", "Throttle \(range)"), rating, action: action) {
             if measured {
                 Text(String(format: "Gyro %.1f → %.1f °/s RMS", max(values[2], values[3]), max(values[0], values[1])))
                 Text(String(format: "D-Term %.1f RMS", max(values[4], values[5])))
@@ -1071,7 +1183,7 @@ struct WorkspaceView: View {
                     NSPasteboard.general.setString(text + "\n", forType: .string)
                     copied = label
                 } label: {
-                    Label(copied == label ? "Kopiert" : "Kopieren", systemImage: copied == label ? "checkmark" : "doc.on.doc")
+                    Label(copied == label ? tr("Kopiert", "Copied") : tr("Kopieren", "Copy"), systemImage: copied == label ? "checkmark" : "doc.on.doc")
                 }
             }
             Text(text).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
@@ -1100,7 +1212,7 @@ struct WorkspaceView: View {
             panel.directoryURL = Analyzer.reportFolder
         } else if dumpText {
             panel.allowedContentTypes = [.plainText]
-            panel.message = "Wähle die gespeicherte Betaflight-CLI-Ausgabe von dump (.txt)."
+            panel.message = tr("Wähle die gespeicherte Betaflight-CLI-Ausgabe von dump (.txt).", "Select the saved Betaflight CLI dump (.txt).")
         }
         return panel.runModal() == .OK ? panel.url : nil
     }
@@ -1110,7 +1222,7 @@ struct WorkspaceView: View {
         reviewing = nil
         let segment = index.trimmingCharacters(in: .whitespacesAndNewlines)
         if !segment.isEmpty && (Int(segment) ?? 0) < 1 {
-            error = "Gib eine Segmentnummer ab 1 ein."
+            error = tr("Gib eine Segmentnummer ab 1 ein.", "Enter a segment number starting at 1.")
             return
         }
         error = nil
