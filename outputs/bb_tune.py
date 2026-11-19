@@ -1096,7 +1096,7 @@ def equivalent_dterm_slider(firmware, config, changes):
     return changes
 
 
-def slider_guidance(config, changes, sources, blocked):
+def slider_guidance(config, changes, sources, blocked, relative=None):
     """Show an equivalent slider only when its complete set of effects matches."""
     if blocked:
         return []
@@ -1114,11 +1114,17 @@ def slider_guidance(config, changes, sources, blocked):
         key = "simplified_dterm_filter_multiplier"
         if key in changes:
             guidance.append(f"D-Term Filter Multiplier · {int(config[key]) / 100:.2f} → {int(changes[key]) / 100:.2f}. Für die nächste Runde den aktuellen CLI-Dump mitliefern.")
+    active_step = (relative or {}).get("kind")
     for kind, mode, offered in (("gyro", "simplified_gyro_filter", bool(opening)),
                                 ("dterm", "simplified_dterm_filter", bool(changed))):
-        if offered or config.get(mode) != "ON":
+        if offered or active_step == kind:
             continue
         label, key, _, _ = SLIDERS[kind]
+        if config.get(mode) == "OFF":
+            guidance.append(f"{label} · Vereinfachter Filter-Slider deaktiviert.")
+            continue
+        if config.get(mode) != "ON":
+            continue
         value = config.get(key)
         current = f"Bei {int(value) / 100:.2f} belassen." if value and value.isdecimal() else "Aktuellen Wert beibehalten."
         coverage = all(set(source["metrics"]["noise"]) == {"low", "mid"} for source in sources)
@@ -1132,7 +1138,7 @@ def slider_guidance(config, changes, sources, blocked):
     if gains:
         guidance.append("PID und Feedforward · " + ", ".join(f"{key} {config[key]} → {value}" for key, value in sorted(gains))
                         + ". Wiederhole die Manöver der betroffenen Achsen.")
-    if any(source["metrics"].get("short_events") for source in sources):
+    if active_step != "master" and any(source["metrics"].get("short_events") for source in sources):
         multiplier = config.get("simplified_master_multiplier", "")
         current = f"Bei {int(multiplier) / 100:.2f} belassen." if multiplier.isdecimal() else "Aktuellen Wert beibehalten."
         guidance.append(f"Master Multiplier · {current} Im Log fallen kurze Schwingungen ohne starken Stickbefehl auf.")
@@ -1258,7 +1264,7 @@ def run(args):
     report = dict(stage=stage, firmware=firmware, profile=profile, config=config,
                   metrics=metrics, changes=changes, status=status, notes=notes,
                   blocked=blocked, history=[*history, *digests], logs=sources, skipped=skipped,
-                  selection=selection, diagnostic=diagnostic, relative_slider=relative, slider_comparison=comparison, slider_guidance=slider_guidance(config, changes, sources, blocked))
+                  selection=selection, diagnostic=diagnostic, relative_slider=relative, slider_comparison=comparison, slider_guidance=slider_guidance(config, changes, sources, blocked, relative))
     args.report.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
     target = "Messwerte" if diagnostic else (f"PID-Profil {profile}" if profile is not None else "PID-Profil manuell prüfen")
     print(f"Runde {stage}/3 · {len(sources)} Log(s) | {firmware} | {target} | {status}")
