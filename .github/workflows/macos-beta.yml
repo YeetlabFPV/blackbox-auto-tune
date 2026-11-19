@@ -1,0 +1,23 @@
+name: macOS beta
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/macos-beta.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: macos-15
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build signed disk image
+        run: bash build-dmg.sh
+      - name: Publish beta
+        run: |
+          gh release create v0.1.0-beta --target "$GITHUB_SHA" --prerelease \
+            --title 'Blackbox Auto-Tune v0.1.0 beta' \
+            --notes 'Apple Silicon, macOS 14 and newer. Open the disk image and drag the app to Applications. Python, NumPy and the Blackbox decoder are bundled. This test build is ad-hoc signed.' \
+            outputs/Blackbox-Auto-Tune-macOS-arm64.dmg
