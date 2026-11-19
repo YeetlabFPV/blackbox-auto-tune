@@ -102,6 +102,7 @@ struct LogSelection: Decodable {
 }
 
 struct SliderStep: Decodable {
+    let kind: String?
     let instruction: String
     let reason: String
     let undo: String
@@ -254,6 +255,13 @@ struct Result {
 enum Analyzer {
     static let output = Bundle.main.bundleURL.deletingLastPathComponent()
     static let work = output.deletingLastPathComponent().appendingPathComponent("work")
+    static let resources = Bundle.main.resourceURL ?? output
+    static let bundled = FileManager.default.isExecutableFile(atPath: resources.appendingPathComponent("python/bin/python3").path)
+    static let reportFolder = (bundled
+        ? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Blackbox Auto-Tune")
+        : work).appendingPathComponent("Flugberichte")
+    static let guide = (bundled ? resources : output).appendingPathComponent("Anleitung.md")
 
     static func run(logs: [URL], dump: URL?, previous: URL?, index: String, allowFilterOpening: Bool,
                     completion: @escaping (Swift.Result<Result, Error>) -> Void) {
@@ -261,20 +269,20 @@ enum Analyzer {
             do {
                 guard let firstLog = logs.first else { throw Failure("Wähle mindestens ein Rohlog.") }
                 let files = FileManager.default
-                let reports = work.appendingPathComponent("Flugberichte")
+                let reports = reportFolder
                 try files.createDirectory(at: reports, withIntermediateDirectories: true)
                 let baseline = try previous.map(Report.load)
                 let date = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
                 let report = reports.appendingPathComponent("Flug-\((baseline?.stage ?? 0) + 1)-\(date)-\(UUID().uuidString.prefix(8)).json")
-                let python = work.appendingPathComponent("venv/bin/python")
-                let decoder = work.appendingPathComponent("blackbox-tools/obj/blackbox_decode")
+                let python = bundled ? resources.appendingPathComponent("python/bin/python3") : work.appendingPathComponent("venv/bin/python")
+                let decoder = bundled ? resources.appendingPathComponent("blackbox_decode") : work.appendingPathComponent("blackbox-tools/obj/blackbox_decode")
                 guard files.isExecutableFile(atPath: python.path),
                       files.isExecutableFile(atPath: decoder.path) else {
                     throw Failure("Python-Umgebung oder Blackbox-Decoder fehlt. Öffne die App im ursprünglichen outputs-Ordner.")
                 }
                 let process = Process()
                 process.executableURL = python
-                process.arguments = [output.appendingPathComponent("bb_tune.py").path, firstLog.path,
+                process.arguments = [(bundled ? resources : output).appendingPathComponent("bb_tune.py").path, firstLog.path,
                                      "--decoder", decoder.path, "--report", report.path]
                 if allowFilterOpening { process.arguments?.append("--allow-filter-opening") }
                 if let dump { process.arguments?.append(contentsOf: ["--dump", dump.path]) }
@@ -377,7 +385,7 @@ struct WorkspaceView: View {
                 Text("Blackbox Auto-Tune").font(.title2.weight(.semibold))
                 Spacer()
                 Button {
-                    NSWorkspace.shared.open(Analyzer.output.appendingPathComponent("Anleitung.md"))
+                    NSWorkspace.shared.open(Analyzer.guide)
                 } label: {
                     Label("Flugprotokoll", systemImage: "book")
                 }
@@ -642,22 +650,9 @@ struct WorkspaceView: View {
         if let comparison = report.slider_comparison {
             Text(comparison).font(.callout).textSelection(.enabled)
         }
-        if let slider = report.relative_slider {
-            VStack(alignment: .leading, spacing: 7) {
-                Text(slider.instruction).font(.headline)
-                Text(slider.reason)
-                Text("Ändere nur diesen Slider im Betaflight Configurator. Merke dir den Ausgangswert und prüfe nach dem Testflug die Motorwärme.")
-                    .foregroundStyle(.secondary)
-                Text(slider.undo).font(.caption).foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(13).background(surface, in: RoundedRectangle(cornerRadius: 9))
-        }
-        if let guidance = report.slider_guidance, !guidance.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(report.changes.isEmpty ? "Slider-Status" : "Einstellempfehlung").font(.headline)
-                ForEach(guidance, id: \.self) { Text($0) }
-            }
+        if let guidance = report.slider_guidance?.filter({ $0.hasPrefix("PID und Feedforward ·") }),
+           !guidance.isEmpty {
+            ForEach(guidance, id: \.self) { Text($0) }
         }
         if !report.changes.isEmpty {
             if report.profile == nil {
@@ -681,8 +676,7 @@ struct WorkspaceView: View {
             }
         }
         Text("Tune-Übersicht").font(.title2.weight(.semibold)).padding(.top, 4)
-        Text("Bewertet werden die Manöver und Gasbereiche im ausgewählten Flugmaterial.")
-            .font(.callout).foregroundStyle(.secondary)
+        missingManeuvers(report)
         Text("Sollwertfolge im Freiflug").font(.headline)
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 165), spacing: 10, alignment: .top)], spacing: 10) {
             ForEach(["roll", "pitch", "yaw"], id: \.self) { axis in
@@ -691,13 +685,14 @@ struct WorkspaceView: View {
                 metricCard(axis, tracking, gains, report)
             }
         }
+        sliderCard("Master Multiplier", kind: "master", report)
         Text("P/D-Dämpfung").font(.headline)
         LazyVGrid(columns: ratingColumns, spacing: 10) {
             ForEach(["roll", "pitch"], id: \.self) { axis in
                 dampingCard(axis, report, result.previous)
             }
         }
-        let feedforwardTips = report.coverageTips.filter { $0.localizedCaseInsensitiveContains("Feedforward") }
+        let feedforwardTips = report.coverageTips.filter { $0.hasPrefix("Feedforward ·") }
         if !report.blocked && report.stage < 3 && !feedforwardTips.isEmpty {
             DisclosureGroup("Messhinweise für Feedforward") {
                 VStack(alignment: .leading, spacing: 6) {
@@ -711,6 +706,10 @@ struct WorkspaceView: View {
             ForEach(["low", "mid"], id: \.self) { band in
                 filterCard(band, report)
             }
+        }
+        LazyVGrid(columns: ratingColumns, spacing: 10) {
+            sliderCard("Gyro Filter Multiplier", kind: "gyro", report, directLabel: "Gyro-LPF1")
+            sliderCard("D-Term Filter Multiplier", kind: "dterm", report, directLabel: "D-Term-LPF1")
         }
         if let logs = report.logs {
             DisclosureGroup("Frequenzkarte und Gyro-Filterverzögerung") {
@@ -801,6 +800,59 @@ struct WorkspaceView: View {
 
     }
 
+    @ViewBuilder
+    private func missingManeuvers(_ report: Report) -> some View {
+        let missingLow = report.metrics.noise["low"] == nil
+        let missingMid = report.metrics.noise["mid"] == nil
+        let roll = report.metrics.axes["roll"]?.overshoot == nil
+        let pitch = report.metrics.axes["pitch"]?.overshoot == nil
+        let masterOpen = report.slider_guidance?.contains { $0.hasPrefix("Master Multiplier · Messung offen") } == true
+        let missingTracking = ["roll", "pitch", "yaw"].filter { axis in
+            let tracking = report.logs?.compactMap { $0.metrics.tracking?[axis] } ?? []
+            return tracking.filter { $0.relative_error != nil }.reduce(0) { $0 + $1.seconds } < 2
+        }
+        let needRoll = roll || masterOpen || missingTracking.contains("roll")
+        let needPitch = pitch || masterOpen || missingTracking.contains("pitch")
+        let needYaw = missingTracking.contains("yaw")
+        if missingLow || missingMid || needRoll || needPitch || needYaw {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Was im nächsten Flug noch fehlt").font(.headline)
+                if missingLow || missingMid {
+                    let passes = missingLow && missingMid
+                        ? "Flieg erst gemütlich geradeaus, dann eine zweite Gerade mit etwas mehr Gas."
+                        : missingLow ? "Flieg eine gemütliche Gerade mit weniger Gas."
+                        : "Flieg eine Gerade mit etwas mehr Gas als beim gemütlichen Vorwärtsflug."
+                    Label {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(passes + " Lass das Gas ein paar Sekunden ungefähr gleich und wende danach.")
+                            Text(masterOpen ? "Für Gyro-Filter, D-Term-Filter und Master-Vergleich" : "Für Gyro- und D-Term-Filter")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    } icon: { Image(systemName: "waveform").foregroundStyle(TuneRating.open.color) }
+                }
+                if needRoll || needPitch {
+                    let moves = needRoll && needPitch ? "ein paar einzelne Rolls und Flips" :
+                        needRoll ? "ein paar einzelne Rolls" : "ein paar einzelne Flips"
+                    Label {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Flieg \(moves) in beide Richtungen. Lass den Stick nach jeder Bewegung zur Mitte zurück.")
+                            Text(masterOpen ? "Für P/D-Dämpfung, Sollwertfolge und Master-Vergleich" : "Für P/D-Dämpfung und Sollwertfolge")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    } icon: { Image(systemName: "scope").foregroundStyle(TuneRating.open.color) }
+                }
+                if needYaw {
+                    Label("Dreh die Nase ein paarmal nach links und rechts. Das ergänzt die Yaw-Sollwertfolge.",
+                          systemImage: "arrow.left.and.right")
+                }
+            }
+            .font(.callout)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(13)
+            .background(surface, in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
     private var ratingColumns: [GridItem] {
         Array(repeating: GridItem(.flexible(), spacing: 10, alignment: .top), count: 2)
     }
@@ -815,7 +867,7 @@ struct WorkspaceView: View {
                 .padding(.horizontal, 8).padding(.vertical, 4)
                 .background(rating.color.opacity(0.11), in: Capsule())
             detail().foregroundStyle(.secondary)
-            Text(action).fixedSize(horizontal: false, vertical: true)
+            if !action.isEmpty { Text(action).fixedSize(horizontal: false, vertical: true) }
         }
         .font(.callout.monospacedDigit())
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -827,6 +879,31 @@ struct WorkspaceView: View {
             )
         }
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(rating.color.opacity(0.23)))
+    }
+
+    @ViewBuilder
+    private func sliderCard(_ title: String, kind: String, _ report: Report, directLabel: String? = nil) -> some View {
+        let prefix = title + " · "
+        let guidance = report.slider_guidance ?? []
+        if let slider = report.relative_slider, slider.kind == kind ||
+            (slider.kind == nil && slider.instruction.hasPrefix(title + " ")) {
+            ratingCard(title, .check, action: slider.undo) {
+                Text(slider.instruction).fontWeight(.semibold).foregroundStyle(.primary)
+                Text(slider.reason)
+                Text("Ändere nur diesen Slider im Configurator. Merke dir den Ausgangswert und prüfe nach dem Flug die Motorwärme.")
+            }
+        } else {
+            let line = guidance.first { $0.hasPrefix(prefix) }
+            let direct = directLabel.flatMap { label in guidance.first { $0.hasPrefix(label + " · ") } }
+            let detail = line.map { String($0.dropFirst(prefix.count)) }
+               ?? direct.map { "Vorschlag am Tiefpass. " + $0 }
+               ?? (report.diagnostic == true ? "CLI-Zuordnung für diesen Build ungeprüft."
+                   : report.blocked ? "Slider-Bewertung zurückgestellt."
+                   : "Für diesen Bericht liegt keine Slider-Bewertung vor.")
+            let rating: TuneRating = direct != nil || detail.contains("Schwingungen") || detail.hasPrefix("D-Term-Rauschen")
+                ? .check : detail.hasPrefix("Messung offen") || (line == nil && direct == nil) ? .open : .measured
+            ratingCard(title, rating, action: detail.hasPrefix("Messung offen") ? "" : detail) { EmptyView() }
+        }
     }
 
     private func metricCard(_ axis: String, _ tracking: [TrackingMetrics], _ gains: [Double], _ report: Report) -> some View {
@@ -846,7 +923,7 @@ struct WorkspaceView: View {
             action = report.blocked ? "PID-Rücknahme oben prüfen." : "PID-Vorschlag oben testen und ähnliche Manöver wiederholen."
         } else if seconds < 2 || error == nil {
             rating = .open
-            action = "Wiederhole ein paar zügige Bewegungen auf dieser Achse."
+            action = ""
         } else if let error, error > 0.10 {
             rating = .check
             action = measured.contains { $0.near_motor_limit > 0.05 }
@@ -854,7 +931,9 @@ struct WorkspaceView: View {
                 : "Wiederhole ähnliche Bewegungen. Prüfe die betroffene Achse im Folgeflug."
         } else {
             rating = .good
-            action = "Einstellung beibehalten."
+            action = report.relative_slider?.kind == "master" && axis != "yaw"
+                ? "Beim Master-Test die Sollwertfolge mit ähnlichen Manövern vergleichen."
+                : "Einstellung beibehalten."
         }
         return ratingCard(axis.capitalized, rating, action: action) {
             if let error {
@@ -888,11 +967,7 @@ struct WorkspaceView: View {
             }
         } else {
             rating = .open
-            let prefix = "\(axis.capitalized) · P/D-Dämpfung separat prüfen. "
-            let tip = report.coverageTips.first { $0.hasPrefix(prefix) }
-            let moves = axis == "roll" ? "Rolls" : "Flips"
-            action = tip.map { String($0.dropFirst(prefix.count)) } ??
-                "Flieg ein paar \(moves) in beide Richtungen und lass den Stick jeweils zur Mitte zurück."
+            action = ""
         }
         return ratingCard(axis.capitalized, rating, action: action) {
             if let overshoot {
@@ -957,19 +1032,19 @@ struct WorkspaceView: View {
         let rating: TuneRating = !measured ? .open : (strong || noisy ? .check : .good)
         let action: String
         if !measured {
-            let prefix = "Filter bei \(range) Gas · "
-            action = report.coverageTips.first { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) }
-                ?? "Flieg eine ruhige Gerade in diesem Gasbereich."
+            action = ""
         } else if strong {
             action = "Prüfe Props und Motoren und miss den Gasbereich erneut."
         } else if noisy {
             let filterChange = report.changes.keys.contains { $0.hasPrefix("dterm_lpf") }
                 || report.relative_slider?.instruction.hasPrefix("D-Term Filter") == true
             action = filterChange
-                ? "Teste die Filterempfehlung oben und wiederhole dieselbe Gerade."
+                ? "Teste die Filterempfehlung und wiederhole dieselbe Gerade."
                 : "Wiederhole eine ruhige Gerade in diesem Gasbereich, um das Rauschen zu bestätigen."
         } else {
-            action = "Filter für diesen Messbereich beibehalten."
+            action = ["gyro", "dterm"].contains(report.relative_slider?.kind ?? "")
+                ? "Miss diesen Gasbereich nach dem Slider-Test erneut."
+                : "Filter für diesen Messbereich beibehalten."
         }
         return ratingCard("Gas \(range)", rating, action: action) {
             if measured {
@@ -1022,7 +1097,7 @@ struct WorkspaceView: View {
         panel.canChooseDirectories = false
         if json {
             panel.allowedContentTypes = [.json]
-            panel.directoryURL = Analyzer.work.appendingPathComponent("Flugberichte")
+            panel.directoryURL = Analyzer.reportFolder
         } else if dumpText {
             panel.allowedContentTypes = [.plainText]
             panel.message = "Wähle die gespeicherte Betaflight-CLI-Ausgabe von dump (.txt)."
