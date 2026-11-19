@@ -17,7 +17,7 @@ jobs:
         run: bash build-dmg.sh
       - name: Publish beta
         run: |
-          gh release create v0.1.0-beta --target "$GITHUB_SHA" --prerelease \
-            --title 'Blackbox Auto-Tune v0.1.0 beta' \
-            --notes 'Apple Silicon, macOS 14 and newer. Open the disk image and drag the app to Applications. Python, NumPy and the Blackbox decoder are bundled. This test build is ad-hoc signed.' \
+          gh release create v0.2.0-beta --target "$GITHUB_SHA" --prerelease \
+            --title 'Blackbox Auto-Tune v0.2.0 beta' \
+            --notes 'Apple Silicon, macOS 14 and newer. Open the disk image and drag the app to Applications. Python, NumPy and the Blackbox decoder are bundled. Switch between English and German in the app toolbar. This test build is ad-hoc signed.' \
             outputs/Blackbox-Auto-Tune-macOS-arm64.dmg
