@@ -653,9 +653,9 @@ struct WorkspaceView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(13).background(surface, in: RoundedRectangle(cornerRadius: 9))
         }
-        if report.relative_slider == nil, let guidance = report.slider_guidance, !guidance.isEmpty {
+        if let guidance = report.slider_guidance, !guidance.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Einstellempfehlung").font(.headline)
+                Text(report.changes.isEmpty ? "Slider-Status" : "Einstellempfehlung").font(.headline)
                 ForEach(guidance, id: \.self) { Text($0) }
             }
         }
