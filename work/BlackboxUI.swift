@@ -73,7 +73,18 @@ struct RecoverySummary: Decodable {
     let duration: Double
 }
 
+struct ChirpResponse: Decodable {
+    let axis: String
+    let seconds: Double
+    let duration: Double
+    let frequency_hz: [Double]
+    let gain_db: [Double]
+    let phase_deg: [Double]
+}
+
 struct FlightMetrics: Decodable {
+    let chirp_response: [ChirpResponse]?
+    let chirp_seconds: Double?
     let short_events: [ShortEvent]?
     let recovery_summary: [String: RecoverySummary]?
     let stop_summary: [String: StopCoverage]?
@@ -823,6 +834,28 @@ struct WorkspaceView: View {
             sliderCard("Gyro Filter Multiplier", kind: "gyro", report, directLabel: "Gyro-LPF1")
             sliderCard("D-Term Filter Multiplier", kind: "dterm", report, directLabel: "D-Term-LPF1")
         }
+        if let logs = report.logs, logs.contains(where: { ($0.metrics.chirp_seconds ?? 0) > 0 }) {
+            DisclosureGroup(tr("Chirp-Frequenzantwort", "Chirp frequency response")) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(tr("Betaflight-markierte Sweeps. Gain und Phase beschreiben die gemessene Regelantwort. CLI-Vorschläge verwenden die normalen Flugabschnitte.",
+                            "Betaflight-marked sweeps. Gain and phase describe the measured closed-loop response. CLI suggestions use the ordinary flight sections."))
+                        .foregroundStyle(.secondary)
+                    ForEach(Array(logs.enumerated()), id: \.offset) { _, log in
+                        let sweeps = log.metrics.chirp_response ?? []
+                        if (log.metrics.chirp_seconds ?? 0) > 0 {
+                            Text(log.file).font(.headline)
+                            if sweeps.isEmpty {
+                                Text(tr("Chirp erkannt. Für eine belastbare Kurve fehlen genügend gültige Frequenzpunkte.",
+                                        "Chirp detected. Too few valid frequency points for a reliable curve."))
+                            }
+                            ForEach(Array(sweeps.enumerated()), id: \.offset) { _, sweep in
+                                chirpChart(sweep)
+                            }
+                        }
+                    }
+                }.padding(.vertical, 8)
+            }
+        }
         if let logs = report.logs {
             DisclosureGroup(tr("Frequenzkarte und Gyro-Filterverzögerung", "Frequency map and gyro filter delay")) {
                 VStack(alignment: .leading, spacing: 15) {
@@ -1084,6 +1117,26 @@ struct WorkspaceView: View {
         return ratingCard(axis.capitalized, rating, action: action) {
             if let overshoot {
                 Text(tr("Überschwingen \(percent(overshoot, old))", "Overshoot \(percent(overshoot, old))"))
+            }
+        }
+    }
+
+    private func chirpChart(_ sweep: ChirpResponse) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(String(format: "%@ · %.1f s → %.1f s", sweep.axis.capitalized,
+                        sweep.seconds, sweep.seconds + sweep.duration)).font(.subheadline)
+            ForEach(["dB", "°"], id: \.self) { unit in
+                let values = unit == "dB" ? sweep.gain_db : sweep.phase_deg
+                Chart {
+                    ForEach(Array(zip(sweep.frequency_hz, values).enumerated()), id: \.offset) { _, point in
+                        PointMark(x: .value(tr("Frequenz (Hz)", "Frequency (Hz)"), point.0),
+                                  y: .value(unit, point.1))
+                            .foregroundStyle(accent).symbolSize(13)
+                    }
+                }
+                .chartXAxisLabel(tr("Frequenz (Hz)", "Frequency (Hz)"))
+                .chartYAxisLabel(unit == "dB" ? "Gain (dB)" : tr("Phase (°)", "Phase (°)"))
+                .frame(height: 125)
             }
         }
     }
