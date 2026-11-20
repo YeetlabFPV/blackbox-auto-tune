@@ -36,7 +36,8 @@ def decode_columns(segment, decoder, select_fields):
     with tempfile.TemporaryDirectory() as directory:
         source = Path(directory) / "flight.bbl"
         source.write_bytes(MARKER + segment)
-        subprocess.run([decoder, str(source)], cwd=directory, capture_output=True,
+        subprocess.run([decoder, "--unit-flags", "raw", source.name], cwd=directory, capture_output=True,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                        check=True, timeout=120)
         result = list(Path(directory).glob("flight.[0-9][0-9].csv"))
         require(len(result) == 1, "Decoder hat kein eindeutiges Flug-CSV erzeugt.")
@@ -65,7 +66,15 @@ def modern_fields(headers, columns):
 
 
 def decode_segment(segment, decoder):
-    return decode_columns(segment, decoder, modern_fields)
+    def fields(headers, columns):
+        fields = modern_fields(headers, columns)
+        if headers.get("Firmware revision", "").startswith("Betaflight 2026.6.") and "flightModeFlags" in columns:
+            # The 2026.6 firmware logs the first word of rcModeActivationMask.
+            headers["_chirp_mode_column"] = True
+            fields.append("flightModeFlags")
+        return fields
+
+    return decode_columns(segment, decoder, fields)
 
 
 def read_dump(path):
@@ -516,6 +525,49 @@ def summarize_recoveries(flights):
             for gas, samples in sorted(by_gas.items()) if len(samples) >= 3}
 
 
+def chirp_response(time, setpoint, gyro, active, gaps, saturated, hz):
+    """Closed-loop response H1 = Sxy / Sxx over logged CHIRP intervals."""
+    edges = np.flatnonzero(np.diff(np.r_[False, active, False]))
+    n = round(hz)
+    window = np.hanning(n)
+    frequency = np.fft.rfftfreq(n, 1 / hz)
+    results = []
+    for start, end in zip(edges[::2], edges[1::2]):
+        cross = np.zeros((len(frequency), 3), dtype=complex)
+        input_power = np.zeros((len(frequency), 3))
+        output_power = np.zeros_like(input_power)
+        windows = 0
+        for offset in range(start, end - n + 1, n // 2):
+            part = slice(offset, offset + n)
+            if gaps[part].any() or np.mean(saturated[part]) > .01:
+                continue
+            x = setpoint[part]
+            y = gyro[part]
+            x = np.fft.rfft((x - x.mean(axis=0)) * window[:, None], axis=0)
+            y = np.fft.rfft((y - y.mean(axis=0)) * window[:, None], axis=0)
+            input_power += abs(x) ** 2
+            output_power += abs(y) ** 2
+            cross += x.conj() * y
+            windows += 1
+        if windows < 3:
+            continue
+        usable = (frequency >= 2) & (frequency <= min(180, hz * .4))
+        axis = int(np.argmax(input_power[usable].sum(axis=0)))
+        px, py, pxy = input_power[:, axis], output_power[:, axis], cross[:, axis]
+        coherence = abs(pxy) ** 2 / np.maximum(px * py, 1e-12)
+        valid = usable & (px >= max(px[usable].max() * .003, n**2)) & (coherence >= .75)
+        if np.count_nonzero(valid) < 5:
+            continue
+        response = pxy[valid] / px[valid]
+        gain = 20 * np.log10(np.maximum(abs(response), 1e-6))
+        seconds = float((time[start] - time[0]) / 1e6)
+        results.append(dict(axis=AXES[axis], seconds=seconds, duration=float((end - start) / hz),
+                            frequency_hz=frequency[valid].tolist(), gain_db=gain.tolist(),
+                            phase_deg=np.angle(response, deg=True).tolist(),
+                            coherence=np.minimum(coherence[valid], 1).tolist()))
+    return results
+
+
 def analyze(headers, data):
     require(len(data) > 10000 and np.isfinite(data).all(), "Zu wenig gültige Flugdaten.")
     dt = np.diff(data[:, 0])
@@ -526,6 +578,11 @@ def analyze(headers, data):
     gaps = np.r_[False, abs(dt - period) > .20 * period]
     require(np.mean(gaps) < .025, "Zu viele Zeitlücken oder zu viel Jitter für diese Auswertung.")
     require((data[-1, 0] - data[0, 0]) / 1e6 >= 20, "Der Flug muss mindestens 20 s Logdaten liefern.")
+    chirp_mask = np.zeros(len(data), dtype=bool)
+    if headers.get("_chirp_mode_column"):
+        # BOXCHIRP is enum index 6 for the verified 2026.6 series.
+        chirp_mask = (data[:, -1].astype(np.uint32) & (1 << 6)) != 0
+        data = data[:, :-1]
     scale = 10 if int(headers["blackbox_high_resolution"]) else 1
     throttle = data[:, 1] / 1000
     sp, gyro, raw = [data[:, offset:11:3] / scale for offset in (2, 3, 4)]
@@ -535,6 +592,12 @@ def analyze(headers, data):
     motors = (data[:, 13:17] - low) / (high - low)
     require(np.max(motors) <= 1.02, "Motorwerte passen nicht zum Logheader.")
     saturated = np.max(motors, axis=1) >= .98
+    chirps = chirp_response(data[:, 0], sp, gyro, chirp_mask, gaps, saturated, hz)
+    chirp_seconds = float(np.count_nonzero(chirp_mask) / hz)
+    # Guard the edges too so decay from a sweep cannot count as a stick stop.
+    for edge in np.flatnonzero(np.diff(np.r_[False, chirp_mask])):
+        chirp_mask[max(0, edge - round(.30 * hz)):edge + round(.30 * hz)] = True
+    gaps = gaps | chirp_mask
     metrics, tracking, estimated_steps = {}, {}, {}
     stops = {}
     has_rpm = data.shape[1] in (21, 27)
@@ -601,7 +664,8 @@ def analyze(headers, data):
                              data[:, -4:] if has_rpm else None, gaps, saturated, hz)
     filters["rpm_configured"] = headers.get("dshot_bidir") == "1" and int(headers.get("rpm_filter_harmonics", 0)) > 0
     short, recoveries = short_events(data[:, 0], throttle, sp, gyro, motors, gaps, hz)
-    return {"short_events": short, "recoveries": recoveries, "hz": round(hz), "axes": metrics, "noise": bins, "tracking": tracking,
+    return {"chirp_response": chirps, "chirp_seconds": chirp_seconds,
+            "short_events": short, "recoveries": recoveries, "hz": round(hz), "axes": metrics, "noise": bins, "tracking": tracking,
             "filter_profile": filters, "control_terms_available": has_terms,
             "windows": {key: len(values) for key, values in noise.items()},
             "response": flight_response(sp, gyro, throttle, saturated, gaps, hz),
@@ -836,7 +900,7 @@ def check_previous_config(previous, firmware, profile, config):
 def tune_signature(headers):
     # These values are measurements of the running RC link, not configured tuning parameters.
     dynamic = {"Log start datetime", "vbatref", "rc_smoothing_active_cutoffs_ff_sp_thr",
-               "rc_smoothing_rx_smoothed"}
+               "rc_smoothing_rx_smoothed", "_chirp_mode_column"}
     return tuple(sorted((key, value) for key, value in headers.items() if key not in dynamic))
 
 
@@ -1157,7 +1221,7 @@ def slider_guidance(config, changes, sources, blocked, relative=None):
 
 def run(args):
     decoder = str(Path(args.decoder).resolve()) if Path(args.decoder).is_file() else args.decoder
-    previous = json.loads(args.previous.read_text()) if args.previous else None
+    previous = json.loads(args.previous.read_text(encoding="utf-8")) if args.previous else None
     stage = previous["stage"] + 1 if previous else 1
     require(stage <= 3, "Diese Messreihe ist nach Flug 3 abgeschlossen.")
     history = previous["history"] if previous else []
@@ -1275,7 +1339,7 @@ def run(args):
                   metrics=metrics, changes=changes, status=status, notes=notes,
                   blocked=blocked, history=[*history, *digests], logs=sources, skipped=skipped,
                   selection=selection, diagnostic=diagnostic, relative_slider=relative, slider_comparison=comparison, slider_guidance=slider_guidance(config, changes, sources, blocked, relative))
-    args.report.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
+    args.report.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     target = "Messwerte" if diagnostic else (f"PID-Profil {profile}" if profile is not None else "PID-Profil manuell prüfen")
     print(f"Runde {stage}/3 · {len(sources)} Log(s) | {firmware} | {target} | {status}")
     print(selection["reason"])
