@@ -1,9 +1,12 @@
 # Blackbox Auto-Tune
 
-A local macOS app for Betaflight Blackbox logs. See how your quad tracks stick inputs, inspect filter noise and oscillations, and get testable PID, feedforward, and filter suggestions. Compare a follow-up flight to see what changed. Available in English and German.
+Analyze Betaflight Blackbox logs locally, check tracking and filter noise, and compare tuning changes across flights.
 
-[Download the DMG](https://github.com/YeetlabFPV/blackbox-auto-tune/releases) · [Flight guide](outputs/Flight-Guide.md) · [Feedback](https://github.com/YeetlabFPV/blackbox-auto-tune/issues)
+[Downloads](https://github.com/YeetlabFPV/blackbox-auto-tune/releases) · [Flight guide](outputs/Flight-Guide.md) · [Feedback](https://github.com/YeetlabFPV/blackbox-auto-tune/issues)
 
-Apple Silicon, macOS 14 or later. Open the DMG and drag the app to Applications. macOS may ask you to approve this beta in Privacy & Security.
+- **macOS 14+ · Apple Silicon** — Open the DMG and drag the app to Applications.
+- **Windows · x64** — Extract the whole ZIP and run `Blackbox-Auto-Tune.exe`. The Windows beta has an English interface.
+
+Betaflight 2026.6 logs with marked Chirp sweeps show gain and phase by frequency. The tuning rules use ordinary flight sections for CLI and slider suggestions.
 
 ![Blackbox Auto-Tune dashboard in English](assets/dashboard.svg)
